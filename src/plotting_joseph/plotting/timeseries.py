@@ -462,10 +462,10 @@ class Timeseries:
         master_lookup : str or Path, optional
             Master lookup parquet (``location_id`` -> tile with ``lat``/``lon``).
             Alternative to ``lookup_tables``. The countries lookup is automatically
-            generated from the web (reverse geocoding) and cached for reuse; if
-            generation fails, country names fall back to "Unknown" with a warning.
-            When ``add_closest_points`` is used, the neighbor lookup is also
-            generated on demand and cached.
+            resolved online (reverse geocoding) and cached for reuse; country
+            names fall back to "Unknown" only if generation fails (e.g. no
+            internet on first use). When ``add_closest_points`` is used, the
+            neighbor lookup is also generated on demand and cached.
         save_dir : str or Path, optional
             Save each location figure as ``{save_dir}/{location_id}.png``.
         figsize : tuple, default=(10, 5)
@@ -523,12 +523,15 @@ class Timeseries:
             )
 
             location_ids_path = ensure_location_ids(master_lookup)
-            # Countries are always included; fall back to "Unknown" if generation fails
+            # Countries are included by default; fall back to "Unknown" only if
+            # generation fails (e.g. no internet on the first country lookup).
             try:
                 countries = ensure_country_lookup(master_lookup)
             except (ImportError, OSError) as e:
                 warnings.warn(
-                    f"Could not generate country lookup; country names will be 'Unknown'. {e}"
+                    "Could not generate country lookup; country names will be "
+                    f"'Unknown'. Reverse geocoding downloads a GeoNames snapshot "
+                    f"on first use, so internet access is required: {e}"
                 )
                 countries = None
             neighbors_dir = (
@@ -926,7 +929,8 @@ def plot_time_series(
         Master lookup parquet (``location_id`` -> tile with ``lat``/``lon``).
         If provided and ``lookup_tables`` is None, the country lookup is
         auto-generated from the web (reverse geocoding) and cached for reuse.
-        If generation fails, country names fall back to "Unknown" with a warning.
+        Country names fall back to "Unknown" only if generation fails (e.g. no
+        internet on first use).
     save_dir : str or Path, optional
         Save each location figure as ``{save_dir}/{location_id}.png``.
     figsize : tuple, default=(10, 5)

@@ -27,22 +27,23 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Visualization",
 ]
 
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "pyarrow>=12.0",
+    "reverse_geocoder>=1.5",
+]
+
 [project.urls]
 Repository = "https://github.com/wagnerjoseph/plotting_joseph"
 Documentation = "https://github.com/wagnerjoseph/plotting_joseph"
 
 [project.optional-dependencies]
 netcdf = ["xarray>=2023.1", "netCDF4>=1.6"]
-geocoding = ["reverse_geocoder>=1.5"]
 coastlines = ["cartopy>=0.22"]
-all = ["plotting_joseph[netcdf,geocoding,coastlines]"]
+all = ["plotting_joseph[netcdf,coastlines]"]
 dev = ["pytest>=7.0", "ruff>=0.1"]
-
-[dependencies]
-pandas = ">=2.0"
-numpy = ">=1.24"
-matplotlib = ">=3.7"
-pyarrow = ">=12.0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/plotting_joseph"]

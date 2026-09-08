@@ -26,7 +26,7 @@ agnostic and easy to drop into any project.
 ### Install with uv (recommended)
 
 ```bash
-uv add "plotting_joseph[all] @ git+https://github.com/wagnerjoseph/plotting_geo.git"
+uv add "plotting_joseph[all] @ git+https://github.com/wagnerjoseph/plotting_joseph.git"
 ```
 
 ### Install from local repository
@@ -42,10 +42,15 @@ Extras:
 | Extra        | Provides                                        |
 |--------------|--------------------------------------------------|
 | `netcdf`     | xarray / netCDF loading (load then pass DataFrame) |
-| `geocoding`  | automatic country-name lookup generation         |
 | `coastlines` | cartopy natural-earth coastlines on maps         |
-| `all`        | all of the above                                 |
+| `all`        | netcdf + coastlines                              |
 | `dev`        | pytest + ruff                                    |
+
+> **Country names are included by default.** `plot_time_series` resolves the
+> country for each location automatically (online reverse geocoding) — no extra
+> install needed. The first country lookup downloads a small GeoNames snapshot
+> and caches it for fast offline reuse afterwards, so internet is only required
+> the first time.
 
 ## Quick Start
 
@@ -101,7 +106,8 @@ Pass a **master lookup** (`location_id_to_tile_id.parquet` with `location_id`,
 `lat`, `lon` and optional `tile_id`) to the plotting functions and the derived
 lookups are **created on demand**, only when they don't already exist:
 
-* **countries** (for time-series titles) — via reverse geocoding from the web
+* **countries** (for time-series titles) — resolved online via reverse
+  geocoding (downloaded and cached on first use)
 * **grid/map lookup** (for `plot_map`) — built from the lat/lon coordinates,
   keyed by `grid_sampling` + `extent` + `k`
 * **neighbors** (for `add_closest_points`) — per-tile nearest neighbors, keyed

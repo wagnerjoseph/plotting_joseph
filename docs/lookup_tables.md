@@ -143,7 +143,8 @@ A Python pickle of a `dict`: `{location_id: country_name}`.
 
 ### Generate
 
-Requires the `geocoding` extra and internet access on first use:
+Reverse geocoding is a core feature (no extra install); internet is required
+only on first use (it downloads a GeoNames snapshot and caches it):
 
 ```python
 LookupTableCreator.generate_country_lookup(

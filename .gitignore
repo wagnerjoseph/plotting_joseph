@@ -38,6 +38,9 @@ lookup_tables/
 *.parquet
 *.pkl
 
+# Generated plots
+figures/
+
 # Credentials
 *.token
 .env

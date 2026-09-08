@@ -45,7 +45,7 @@ print("Created location_ids.parquet")
 # )
 
 # ---------------------------------------------------------------------------
-# 2. countries.pkl — auto country names (requires 'geocoding' extra)
+# 2. countries.pkl — auto country names (reverse geocoding, built-in)
 # ---------------------------------------------------------------------------
 # LookupTableCreator.generate_country_lookup(
 #     location_ids_path=OUT_DIR / "location_ids.parquet",

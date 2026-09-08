@@ -264,23 +264,24 @@ class LookupTableCreator:
     def generate_country_lookup(cls, location_ids_path, output_path) -> Path:
         """Build a ``{location_id: country_name}`` pickle.
 
-        Requires the ``geocoding`` extra (``reverse_geocoder``) and internet
-        access on first use.
+        Uses ``reverse_geocoder`` (a core dependency) to resolve each point's
+        nearest populated place and its 2-letter country code, then translates
+        the code to a full English name via the bundled ``COUNTRY_NAMES`` map.
+        Requires internet access on first use (``reverse_geocoder`` downloads
+        a GeoNames snapshot); lookups are fast and fully offline afterwards.
+        Points with no resolvable country are stored as ``"Unknown"``.
         """
-        try:
-            import reverse_geocoder as rg
-        except ImportError as e:  # pragma: no cover
-            raise ImportError(
-                "generate_country_lookup requires the 'geocoding' extra: "
-                "pip install 'plotting_joseph[geocoding]'"
-            ) from e
+        import reverse_geocoder as rg
+
+        from .countries import country_name_from_code
 
         loc = pd.read_parquet(location_ids_path)
         coords = list(zip(loc["lat"].to_numpy(), loc["lon"].to_numpy()))
         results = rg.search(coords)
         records = {}
         for loc_id, res in zip(loc["location_id"], results):
-            records[int(loc_id)] = res.get("cc") if isinstance(res, dict) else str(res)
+            cc = res.get("cc") if isinstance(res, dict) else None
+            records[int(loc_id)] = country_name_from_code(cc)
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         import pickle
@@ -429,8 +430,9 @@ def ensure_country_lookup(
 ) -> Path:
     """Return a ``{location_id: country}`` pickle, generating it if missing.
 
-    The lookup is built from the web (reverse geocoding) when it does not exist
-    yet, unless ``force=False`` and it is already cached.
+    The lookup is resolved online (reverse geocoding) when it does not exist
+    yet, unless ``force=False`` and it is already cached. Needs internet access
+    on first use.
     """
     master = _read_master(master_lookup)
     d = _lookup_cache_dir(master_lookup, cache_dir)
