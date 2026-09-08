@@ -461,11 +461,12 @@ class Timeseries:
             mapping), ``countries`` pickle, and ``neighbors_dir`` directory.
         master_lookup : str or Path, optional
             Master lookup parquet (``location_id`` -> tile with ``lat``/``lon``).
-            Alternative to ``lookup_tables``. The countries lookup is automatically
-            resolved online (reverse geocoding) and cached for reuse; country
-            names fall back to "Unknown" only if generation fails (e.g. no
-            internet on first use). When ``add_closest_points`` is used, the
-            neighbor lookup is also generated on demand and cached.
+            Alternative to ``lookup_tables``. When provided, the country for each
+            plotted ``location_id`` is resolved automatically (online reverse
+            geocoding) and reused on repeat calls; countries with no resolvable
+            value simply omit the ``(country)`` tag from the title. When
+            ``add_closest_points`` is used, the neighbor lookup is also
+            generated on demand and cached.
         save_dir : str or Path, optional
             Save each location figure as ``{save_dir}/{location_id}.png``.
         figsize : tuple, default=(10, 5)
@@ -516,24 +517,9 @@ class Timeseries:
 
         # --- Generate lookup tables from the master lookup (on demand) ---
         if lookup_tables is None and master_lookup is not None:
-            from ..data import (
-                ensure_country_lookup,
-                ensure_location_ids,
-                ensure_neighbor_lookup,
-            )
+            from ..data import ensure_location_ids, ensure_neighbor_lookup
 
             location_ids_path = ensure_location_ids(master_lookup)
-            # Countries are included by default; fall back to "Unknown" only if
-            # generation fails (e.g. no internet on the first country lookup).
-            try:
-                countries = ensure_country_lookup(master_lookup)
-            except (ImportError, OSError) as e:
-                warnings.warn(
-                    "Could not generate country lookup; country names will be "
-                    f"'Unknown'. Reverse geocoding downloads a GeoNames snapshot "
-                    f"on first use, so internet access is required: {e}"
-                )
-                countries = None
             neighbors_dir = (
                 ensure_neighbor_lookup(master_lookup, k_closest, max_distance_km)
                 if k_closest > 0
@@ -541,7 +527,6 @@ class Timeseries:
             )
             lookup_tables = LookupTables(
                 location_ids=location_ids_path,
-                countries=countries,
                 neighbors_dir=neighbors_dir,
             )
         lookup_tables = lookup_tables or LookupTables()
@@ -650,11 +635,49 @@ class Timeseries:
                     {"var": var, "value": val, "color": color, "below": False, "alpha": 0.15}
                 )
 
-        # --- Load country lookup (optional) ---
+        # --- Resolve country names (optional) ---
+        # A country lookup is only derived when a location lookup (location_id +
+        # lat/lon coordinates) is available. Preferred sources, in order:
+        #   1. an explicitly supplied countries file,
+        #   2. the master_lookup,
+        #   3. the location_ids table.
+        # Without any coordinate source, countries are simply not shown.
         country_lookup = {}
+        country_coord_source = None
         if lookup_tables.countries is not None and lookup_tables.countries.exists():
-            with open(lookup_tables.countries, "rb") as f:
-                country_lookup = pickle.load(f)
+            country_coord_source = ("file", lookup_tables.countries)
+        elif master_lookup is not None:
+            country_coord_source = ("master", Path(master_lookup))
+        elif (
+            lookup_tables.location_ids is not None
+            and lookup_tables.location_ids.exists()
+        ):
+            country_coord_source = ("master", lookup_tables.location_ids)
+
+        if country_coord_source is not None:
+            try:
+                kind, source = country_coord_source
+                if kind == "file":
+                    with open(source, "rb") as f:
+                        loaded = pickle.load(f)
+                    # Normalize stored values: keep non-empty strings, drop nan/garbage.
+                    country_lookup = {
+                        int(k): (v if isinstance(v, str) and v.strip() else "")
+                        for k, v in loaded.items()
+                    }
+                else:
+                    from ..data import derive_countries_for_locations
+
+                    country_lookup = derive_countries_for_locations(
+                        source, location_ids=location_ids
+                    )
+            except (ImportError, OSError) as e:
+                warnings.warn(
+                    "Could not resolve country names (reverse geocoding needs "
+                    "internet access on first use); the country tag will be "
+                    f"omitted from titles. {e}"
+                )
+                country_lookup = {}
 
         figures = []
 
@@ -842,8 +865,9 @@ class Timeseries:
                             below=thresh["below"],
                         )
 
-            # Country for title
-            country = country_lookup.get(int(loc_id), "Unknown")
+            # Country for title (omitted entirely when unknown)
+            country = country_lookup.get(int(loc_id), "")
+            country_suffix = f" ({country})" if country and country != "Unknown" else ""
 
             # Main figure title
             BASE_TITLE_SIZE = 16
@@ -854,20 +878,22 @@ class Timeseries:
                     f"with {num_neighbors} nearest points closer than {max_distance_km}km"
                 )
                 fig.suptitle(
-                    f"location_id = {loc_id} ({country}) - {neighbor_text}",
+                    f"location_id = {loc_id}{country_suffix} - {neighbor_text}",
                     fontsize=title_size,
                     y=1.02,
                 )
             elif k_closest > 0 and max_distance_km == 0:
                 neighbor_text = f"with {k_closest} closest points"
                 fig.suptitle(
-                    f"location_id = {loc_id} ({country}) — {neighbor_text}",
+                    f"location_id = {loc_id}{country_suffix} — {neighbor_text}",
                     fontsize=title_size,
                     y=1.02,
                 )
             else:
                 fig.suptitle(
-                    f"location_id = {loc_id} ({country})", fontsize=title_size, y=1.02
+                    f"location_id = {loc_id}{country_suffix}",
+                    fontsize=title_size,
+                    y=1.02,
                 )
 
             # Save or show
@@ -927,10 +953,11 @@ def plot_time_series(
         mapping), ``countries`` pickle, and ``neighbors_dir`` directory.
     master_lookup : str or Path, optional
         Master lookup parquet (``location_id`` -> tile with ``lat``/``lon``).
-        If provided and ``lookup_tables`` is None, the country lookup is
-        auto-generated from the web (reverse geocoding) and cached for reuse.
-        Country names fall back to "Unknown" only if generation fails (e.g. no
-        internet on first use).
+        If provided and ``lookup_tables`` is None, the country for each plotted
+        ``location_id`` is resolved automatically (online reverse geocoding) and
+        reused on repeat calls. Locations with no resolvable country simply
+        omit the ``(country)`` tag from the title; if reverse geocoding fails
+        (e.g. no internet on first use) a warning is shown.
     save_dir : str or Path, optional
         Save each location figure as ``{save_dir}/{location_id}.png``.
     figsize : tuple, default=(10, 5)

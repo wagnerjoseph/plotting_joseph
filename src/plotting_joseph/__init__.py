@@ -9,6 +9,7 @@ from .countries import COUNTRY_NAMES, country_name_from_code
 from .data import (
     DataLoader,
     LookupTableCreator,
+    derive_countries_for_locations,
     ensure_country_lookup,
     ensure_grid_lookup,
     ensure_location_ids,
@@ -27,6 +28,7 @@ __all__ = [
     "LookupTables",
     "Timeseries",
     "country_name_from_code",
+    "derive_countries_for_locations",
     "ensure_country_lookup",
     "ensure_grid_lookup",
     "ensure_location_ids",

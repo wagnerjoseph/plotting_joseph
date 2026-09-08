@@ -46,11 +46,13 @@ Extras:
 | `all`        | netcdf + coastlines                              |
 | `dev`        | pytest + ruff                                    |
 
-> **Country names are included by default.** `plot_time_series` resolves the
-> country for each location automatically (online reverse geocoding) — no extra
-> install needed. The first country lookup downloads a small GeoNames snapshot
-> and caches it for fast offline reuse afterwards, so internet is only required
-> the first time.
+> **Country names are a built-in, optional feature.** When you pass a
+> `master_lookup` (which maps `location_id -> lat/lon`) to
+> `plot_time_series`, the country for each plotted point is resolved
+> automatically via `reverse_geocoder` (a core dependency) — no separate
+> country file required. The first country lookup downloads a small GeoNames
+> snapshot and caches it, so internet is only needed once. Locations with no
+> resolvable country simply omit the `(country)` tag from the title.
 
 ## Quick Start
 

@@ -446,6 +446,40 @@ def ensure_country_lookup(
     return out
 
 
+def derive_countries_for_locations(master_lookup, location_ids=None) -> dict[int, str]:
+    """Reverse-geocode country names for (optionally) a subset of locations.
+
+    Reads ``location_id``/``lat``/``lon`` from ``master_lookup`` and resolves
+    country names **only for ``location_ids``** (all locations when ``None``),
+    using the ``reverse_geocoder`` package. Returns ``{location_id: country}``.
+
+    Unlike :func:`ensure_country_lookup`, this does not persist or cache to
+    disk and only resolves the requested points, keeping it fast for a plotting
+    call. Requires internet access on first use.
+    """
+    import reverse_geocoder as rg
+
+    from .countries import country_name_from_code
+
+    master = _read_master(master_lookup)
+    if location_ids is not None:
+        ids = set(location_ids)
+        master = master[master["location_id"].isin(ids)]
+
+    coords = list(
+        zip(
+            master["lat"].to_numpy(dtype=float),
+            master["lon"].to_numpy(dtype=float),
+        )
+    )
+    results = rg.search(coords)
+    records = {}
+    for loc_id, res in zip(master["location_id"], results):
+        cc = res.get("cc") if isinstance(res, dict) else None
+        records[int(loc_id)] = country_name_from_code(cc)
+    return records
+
+
 def ensure_grid_lookup(
     master_lookup,
     grid_sampling: float,
