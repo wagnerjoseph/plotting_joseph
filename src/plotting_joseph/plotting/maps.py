@@ -243,6 +243,20 @@ def plot_map(
 
     image = image_flat.reshape(n_lat, n_lon)
 
+    # Guard against plotting no data: either no location_id in ``data`` fell
+    # inside ``extent`` (inner merge yielded no pixels), or all plotted values
+    # were NaN/missing. Fail with a clear message instead of a cryptic
+    # "zero-size array" error from numpy min/max.
+    if not np.any(~np.isnan(image_flat)):
+        raise ValueError(
+            f"No plottable data for '{var}' within extent {extent}. "
+            "This usually means none of the data's location_ids fall inside "
+            "the requested extent, or the variable values are all NaN. "
+            "Check that 'extent' covers your locations (e.g. print "
+            "data[['location_id', var]] and the master lookup lat/lon) and "
+            "that grid_sampling is reasonable for the extent."
+        )
+
     # Robust color range
     if plot_robust is not None:
         flat_data = image.ravel()
