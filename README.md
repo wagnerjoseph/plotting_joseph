@@ -129,6 +129,7 @@ manual use.
 
 ## Documentation
 
+- [**API reference (full)**](docs/api/reference.md) — every parameter of `plot_time_series` & `plot_map`
 - [Lookup tables](docs/lookup_tables.md) — how to create & use the geographic lookups
 - [Data formats](docs/data_formats.md) — supported formats and column mapping
 - [API: timeseries](docs/api/timeseries.md)

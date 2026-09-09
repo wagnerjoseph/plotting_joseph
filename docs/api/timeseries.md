@@ -1,5 +1,7 @@
 # Timeseries API
 
+> 📚 For the **complete parameter reference**, see [API reference](reference.md).
+
 See `src/plotting_joseph/plotting/timeseries.py` for the full docstring.
 
 ## `plot_time_series(data, ...)`

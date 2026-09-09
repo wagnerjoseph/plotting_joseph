@@ -1,5 +1,7 @@
 # Maps API
 
+> 📚 For the **complete parameter reference**, see [API reference](reference.md).
+
 See `src/plotting_joseph/plotting/maps.py` for the full docstring.
 
 ## `plot_map(data, var, master_lookup, ...)`
