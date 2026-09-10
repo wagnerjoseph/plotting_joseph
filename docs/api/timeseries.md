@@ -59,6 +59,8 @@ Returns a list of matplotlib figures (one per location).
 | `compute_corr`         | bool                  | show Pearson+Spearman vs parent (2-line panels only) |
 | `lower_treshold`       | (value, color)        | shade where values below value           |
 | `upper_treshold`       | (value, color)        | shade where values above value           |
+| `lower_percentile`     | (pct, color)          | shade where values below var's `pct`-th percentile |
+| `upper_percentile`     | (pct, color)          | shade where values above var's `pct`-th percentile |
 | `apply_shading_to_all` | bool                  | extend threshold shading to all panels   |
 
 ### Example

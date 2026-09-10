@@ -91,6 +91,8 @@ interpreted depends on the presence of `add_to`:
 | `compute_corr` | `bool` | `False` | Annotate Pearson + Spearman correlation with the parent. Requires exactly two lines (1 parent + 1 overlay) on the panel. |
 | `lower_treshold` | `tuple` | *absent* | `(value, color)` to shade vertical bands where values fall below `value`. |
 | `upper_treshold` | `tuple` | *absent* | `(value, color)` to shade vertical bands where values rise above `value`. |
+| `lower_percentile` | `tuple` | *absent* | `(percentile, color)` to shade vertical bands where values fall below the variable's `percentile`-th percentile. |
+| `upper_percentile` | `tuple` | *absent* | `(percentile, color)` to shade vertical bands where values rise above the variable's `percentile`-th percentile. |
 | `apply_shading_to_all` | `bool` | `False` | Extend the threshold shading to all panels. |
 
 ### Example

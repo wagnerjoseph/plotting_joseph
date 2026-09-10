@@ -238,6 +238,8 @@ class Timeseries:
         add_second_axis = var_spec.get("add_second_axis", False)
         lower_treshold = var_spec.get("lower_treshold")
         upper_treshold = var_spec.get("upper_treshold")
+        lower_percentile = var_spec.get("lower_percentile")
+        upper_percentile = var_spec.get("upper_percentile")
 
         BASE_LABEL_SIZE = 12
         BASE_LEGEND_SIZE = 10
@@ -291,6 +293,18 @@ class Timeseries:
             upper_val, upper_color = upper_treshold
             Timeseries._add_threshold_bands(
                 plot_ax, b["time"], y_main, upper_val, upper_color, alpha=0.15, below=False
+            )
+        if lower_percentile is not None:
+            p_val, p_color = lower_percentile
+            p_lower = np.nanpercentile(y_main.values, p_val)
+            Timeseries._add_threshold_bands(
+                plot_ax, b["time"], y_main, p_lower, p_color, alpha=0.15, below=True
+            )
+        if upper_percentile is not None:
+            p_val, p_color = upper_percentile
+            p_upper = np.nanpercentile(y_main.values, p_val)
+            Timeseries._add_threshold_bands(
+                plot_ax, b["time"], y_main, p_upper, p_color, alpha=0.15, below=False
             )
 
         for tr in transforms:
@@ -498,6 +512,8 @@ class Timeseries:
             - 'compute_corr': show Pearson+Spearman correlation with the parent.
             - 'lower_treshold': (value, color) shade where values below value.
             - 'upper_treshold': (value, color) shade where values above value.
+            - 'lower_percentile': (pct, color) shade where values below the var's pct-th percentile.
+            - 'upper_percentile': (pct, color) shade where values above the var's pct-th percentile.
             - 'apply_shading_to_all': extend threshold shading to all panels.
         """
         import matplotlib.pyplot as plt
@@ -633,6 +649,16 @@ class Timeseries:
                 val, color = spec["upper_treshold"]
                 global_thresholds.append(
                     {"var": var, "value": val, "color": color, "below": False, "alpha": 0.15}
+                )
+            if spec.get("lower_percentile") is not None:
+                p, color = spec["lower_percentile"]
+                global_thresholds.append(
+                    {"var": var, "percentile": p, "color": color, "below": True, "alpha": 0.15}
+                )
+            if spec.get("upper_percentile") is not None:
+                p, color = spec["upper_percentile"]
+                global_thresholds.append(
+                    {"var": var, "percentile": p, "color": color, "below": False, "alpha": 0.15}
                 )
 
         # --- Resolve country names (optional) ---
@@ -855,11 +881,16 @@ class Timeseries:
             if global_thresholds:
                 for thresh in global_thresholds:
                     if thresh["var"] in b.columns:
+                        threshold_value = thresh.get("value")
+                        if "percentile" in thresh:
+                            threshold_value = np.nanpercentile(
+                                b[thresh["var"]].values, thresh["percentile"]
+                            )
                         Timeseries._draw_global_threshold_bands(
                             axes=axes,
                             time=b["time"],
                             values=b[thresh["var"]],
-                            threshold_value=thresh["value"],
+                            threshold_value=threshold_value,
                             color=thresh["color"],
                             alpha=thresh["alpha"],
                             below=thresh["below"],
@@ -989,6 +1020,8 @@ def plot_time_series(
         - 'compute_corr': show Pearson+Spearman correlation with the parent.
         - 'lower_treshold': (value, color) shade where values below value.
         - 'upper_treshold': (value, color) shade where values above value.
+        - 'lower_percentile': (pct, color) shade where values below the var's pct-th percentile.
+        - 'upper_percentile': (pct, color) shade where values above the var's pct-th percentile.
         - 'apply_shading_to_all': extend threshold shading to all panels.
     """
     return Timeseries.plot_time_series(

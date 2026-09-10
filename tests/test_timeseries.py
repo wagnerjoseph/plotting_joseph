@@ -77,6 +77,51 @@ def test_plot_time_series_apply_shading_to_all(sample_timeseries_data):
     plt.close("all")
 
 
+def test_plot_time_series_percentile_shading(sample_timeseries_data):
+    figs = Timeseries.plot_time_series(
+        data=sample_timeseries_data,
+        location_ids=[1],
+        var_specs=[
+            {"name": "backscatter40", "color": "royalblue"},
+            {"name": "lai", "color": "forestgreen"},
+            {
+                "name": "swvl1",
+                "color": "red",
+                "lower_percentile": (10, "red"),
+                "upper_percentile": (90, "blue"),
+            },
+        ],
+    )
+    total = sum(
+        len([p for p in ax.patches if type(p).__name__ == "Rectangle"])
+        for ax in figs[0].axes
+    )
+    assert total > 0
+    plt.close("all")
+
+
+def test_plot_time_series_percentile_apply_shading_to_all(sample_timeseries_data):
+    figs = Timeseries.plot_time_series(
+        data=sample_timeseries_data,
+        location_ids=[1],
+        var_specs=[
+            {"name": "backscatter40", "color": "royalblue"},
+            {"name": "lai", "color": "forestgreen"},
+            {
+                "name": "swvl1",
+                "color": "red",
+                "lower_percentile": (10, "red"),
+                "upper_percentile": (90, "blue"),
+                "apply_shading_to_all": True,
+            },
+        ],
+    )
+    for ax in figs[0].axes:
+        rects = [p for p in ax.patches if type(p).__name__ == "Rectangle"]
+        assert len(rects) > 0
+    plt.close("all")
+
+
 def test_plot_time_series_multiple_overlays_raises(sample_timeseries_data):
     import pytest
 
