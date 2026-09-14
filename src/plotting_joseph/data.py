@@ -358,13 +358,23 @@ def _format_number(x: float) -> str:
     return f"{x:.6f}".rstrip("0").rstrip(".")
 
 
+# Bump this whenever the lookup-building logic changes (coordinate order,
+# distance metric, schema) so cached lookups are regenerated rather than reused.
+_GRID_LOOKUP_SCHEMA_VERSION = 2
+
+
 def _grid_lookup_name(
     grid_sampling: float, extent, k: int, max_distance_km: float = 0.0
 ) -> str:
-    """Unique, human-readable filename encoding every geometric parameter."""
+    """Unique, human-readable filename encoding every geometric parameter.
+
+    ``_GRID_LOOKUP_SCHEMA_VERSION`` is baked into the name so that any change to
+    the lookup-building logic (coordinate order, distance metric, schema)
+    invalidates previously cached lookups instead of silently reusing them.
+    """
     lon_min, lon_max, lat_min, lat_max = extent
     ext = "_".join(_format_number(v) for v in (lon_min, lon_max, lat_min, lat_max))
-    base = f"gridSampling_{grid_sampling}_extent_{ext}_k{k}"
+    base = f"gridSampling_{grid_sampling}_v{_GRID_LOOKUP_SCHEMA_VERSION}_extent_{ext}_k{k}"
     if max_distance_km > 0:
         base += f"_maxDistKm_{_format_number(max_distance_km)}"
     return f"{base}.parquet"
@@ -494,20 +504,23 @@ def _build_inverted_grid_lookup(
 ) -> pd.DataFrame:
     """Build a distance-capped inverted lookup: each pixel -> nearest location(s).
 
-    For every pixel centre on a regular grid over ``extent`` the ``k`` nearest
-    source locations are found (great-circle distance via scipy cKDTree). A
-    pixel is only mapped to a location when that location lies within
-    ``max_distance_km``; otherwise the pixel is dropped (left blank/white on the
-    map). For ``k == 1`` the result has ``pixel_id``/``location_id`` columns;
-    for ``k > 1`` it has ``pixel_id``/``location_ids`` (lists).
+    Faithful port of the original ``map_loc_id_to_pixel``: for every pixel
+    centre on a regular grid over ``extent`` the ``k`` nearest source locations
+    are found using **great-circle (haversine)** distance. A pixel whose nearest
+    location is farther than ``max_distance_km`` is mapped to ``-1`` (k == 1) or
+    an empty ``location_ids`` list (k > 1), i.e. left blank/white on the map.
+    **All** grid pixels are kept in the table so the schema matches the original
+    ``pixel_id -> location_id`` format.
     """
     try:  # pragma: no cover - environment dependency
-        from scipy.spatial import cKDTree
+        from sklearn.neighbors import BallTree
     except ImportError as e:  # pragma: no cover
         raise ImportError(
-            "plot_map with max_distance_km > 0 requires scipy. "
-            "Install plotting_joseph with scipy (e.g. pip install scipy)."
+            "plot_map with max_distance_km > 0 requires scikit-learn. "
+            "Install plotting_joseph with scikit-learn (e.g. pip install scikit-learn)."
         ) from e
+
+    EARTH_RADIUS_KM = 6371.0
 
     lon_min, lon_max, lat_min, lat_max = extent
     n_lon = int(round((lon_max - lon_min) / grid_sampling))
@@ -518,51 +531,38 @@ def _build_inverted_grid_lookup(
     grid_lons, grid_lats = np.meshgrid(
         lon_min + (cols + 0.5) * grid_sampling,
         lat_max - (rows + 0.5) * grid_sampling,
-        indexing="ij",
+        indexing="xy",
     )
     pixel_id = np.arange(n_lat * n_lon)
 
     source_ids = master["location_id"].to_numpy(dtype=np.int64)
     source_rad = np.radians(
         master[["lat", "lon"]].to_numpy(dtype=float)
-    ).astype(np.float64)
-
-    tree = cKDTree(source_rad)
+    )
     grid_rad = np.radians(
         np.column_stack([grid_lats.ravel(), grid_lons.ravel()])
-    ).astype(np.float64)
+    )
 
+    tree = BallTree(source_rad, metric="haversine")
     k_search = min(k, len(source_ids))
     dist_rad, idx = tree.query(grid_rad, k=k_search)
 
-    def _within_mask(row_dists) -> np.ndarray:
-        return row_dists * 6371.0 <= max_distance_km
+    dist_km = np.asarray(dist_rad) * EARTH_RADIUS_KM
 
     if k == 1:
-        dist_rad = np.asarray(dist_rad)
-        idx = np.asarray(idx)
-        valid = _within_mask(dist_rad)
-        rows_out = pixel_id[valid]
-        locs_out = source_ids[np.asarray(idx)[valid]]
-        return pd.DataFrame({"pixel_id": rows_out, "location_id": locs_out})
+        dist_km = dist_km.ravel()
+        idx = np.asarray(idx).ravel()
+        nearest = np.where(dist_km <= max_distance_km, source_ids[idx], -1)
+        return pd.DataFrame({"pixel_id": pixel_id, "location_id": nearest})
 
-    # k > 1: collect all valid neighbours per pixel.
-    dist_rad = np.asarray(dist_rad)
-    idx = np.asarray(idx)
-    if dist_rad.ndim == 1:  # only one source location
-        dist_rad = dist_rad[:, None]
-        idx = idx[:, None]
-    valid_masks = _within_mask(dist_rad)  # shape (n_pixels, k)
-    location_lists = []
-    pixel_out = []
-    for p in range(pixel_id.size):
-        locs = source_ids[idx[p][valid_masks[p]]]
-        if locs.size:
-            pixel_out.append(pixel_id[p])
-            location_lists.append([int(x) for x in locs])
-    return pd.DataFrame(
-        {"pixel_id": pixel_out, "location_ids": location_lists}
-    )
+    # k > 1: all nearest neighbours within max_distance_km per pixel (may be empty).
+    dist_km = np.atleast_2d(dist_km)
+    idx = np.atleast_2d(idx)
+    location_lists = [
+        [int(x) for x in source_ids[idx[p][dist_km[p] <= max_distance_km]]]
+        for p in range(pixel_id.size)
+    ]
+    return pd.DataFrame({"pixel_id": pixel_id, "location_ids": location_lists})
 
 
 def ensure_grid_lookup(

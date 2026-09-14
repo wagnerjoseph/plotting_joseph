@@ -127,7 +127,7 @@ def test_grid_lookup_encodes_max_distance_in_name(master):
 
 
 def test_grid_lookup_inverted_fills_near_locations(master):
-    """With a large max_distance every pixel gets a value (no white holes)."""
+    """With a large max_distance every pixel gets a real location (no white holes)."""
     cache, master_path = master
     out = ensure_grid_lookup(
         master_path, grid_sampling=0.5, extent=(-25, 25, -15, 15),
@@ -135,32 +135,176 @@ def test_grid_lookup_inverted_fills_near_locations(master):
     )
     df = pd.read_parquet(out)
     assert {"location_id", "pixel_id"} <= set(df.columns)
-    assert (df["pixel_id"] >= 0).all()
     n_pixels = int(round((25 - -25) / 0.5)) * int(round((15 - -15) / 0.5))
+    # All grid pixels are kept, and all are mapped to a real location.
     assert df["pixel_id"].nunique() == n_pixels
+    assert (df["location_id"] >= 0).all()
 
 
 def test_grid_lookup_inverted_leaves_distant_pixels_blank(master):
-    """A tiny max_distance leaves most pixels unmapped (dropped -> white)."""
+    """A tiny max_distance keeps all pixels but marks most as blank (-1)."""
     cache, master_path = master
     out = ensure_grid_lookup(
         master_path, grid_sampling=0.5, extent=(-25, 25, -15, 15),
         max_distance_km=0.01, cache_dir=cache,
     )
     df = pd.read_parquet(out)
-    assert df["pixel_id"].nunique() < 200
+    n_pixels = int(round((25 - -25) / 0.5)) * int(round((15 - -15) / 0.5))
+    assert df["pixel_id"].nunique() == n_pixels
+    blank = int((df["location_id"] == -1).sum())
+    assert blank > 0.9 * n_pixels
 
 
 def test_grid_lookup_inverted_k_gt_1(master):
-    """k>1 returns pixel_id -> location_ids lists within max_distance."""
+    """k>1 returns pixel_id -> location_ids lists (all pixels, empty allowed)."""
     cache, master_path = master
     out = ensure_grid_lookup(
         master_path, grid_sampling=0.5, extent=(-25, 25, -15, 15),
         max_distance_km=2000.0, k=3, cache_dir=cache,
     )
     df = pd.read_parquet(out)
+    n_pixels = int(round((25 - -25) / 0.5)) * int(round((15 - -15) / 0.5))
     assert {"pixel_id", "location_ids"} <= set(df.columns)
+    assert df["pixel_id"].nunique() == n_pixels
     assert df["location_ids"].map(len).max() >= 1
+
+
+def test_grid_lookup_uses_great_circle_distance(tmp_path):
+    """Fill threshold uses true great-circle km, not a planar lat/lon distance."""
+    from plotting_joseph.data import ensure_grid_lookup
+
+    cache = tmp_path / "cache"
+    # Two source locations: (lat=0, lon=0) and (lat=40, lon=0).
+    df = pd.DataFrame(
+        {"location_id": [1, 2], "lat": [0.0, 40.0], "lon": [0.0, 0.0], "tile_id": ["t", "t"]}
+    )
+    master = tmp_path / "m.parquet"
+    df.to_parquet(master, index=False)
+
+    extent = (0.0, 0.5, 39.0, 40.5)  # a small box around the lat=40 location
+    # The box spans up to ~102 km of great-circle distance from (lat=40, lon=0).
+    # A radius of 110 km reaches every pixel; 20 km reaches none.
+    out = ensure_grid_lookup(
+        master, grid_sampling=0.25, extent=extent,
+        max_distance_km=110.0, k=1, cache_dir=cache,
+    )
+    lut = pd.read_parquet(out)
+    # The box is within ~110 km of (lat=40, lon=0) -> all pixels map to loc 2.
+    assert set(lut["location_id"].unique()) == {2}
+
+    out_far = ensure_grid_lookup(
+        master, grid_sampling=0.25, extent=extent,
+        max_distance_km=10.0, k=1, cache_dir=cache,
+    )
+    lut_far = pd.read_parquet(out_far)
+    # 10 km < nearest pixel (~17.5 km) -> no location reaches the box, all blank.
+    assert set(lut_far["location_id"].unique()) == {-1}
+
+
+def test_grid_lookup_inverted_pixel_position_correct(tmp_path):
+    """Each location maps to its actual home cell, not a transposed neighbour.
+
+    Regression for a meshgrid-ordering bug: on a non-square grid the pixel
+    centres were generated transposed relative to ``pixel_id = row*n_lon+col``,
+    scrambling the fill into horizontal/vertical bands.
+    """
+    from plotting_joseph.data import ensure_grid_lookup
+
+    cache = tmp_path / "cache"
+    grid_sampling = 1.0
+    extent = (0.0, 4.0, 0.0, 2.0)  # n_lon=4, n_lat=2 (non-square)
+    lon_min, _lon_max, _lat_min, lat_max = extent
+    n_lon = int(round((extent[1] - extent[0]) / grid_sampling))
+
+    master = pd.DataFrame(
+        {"location_id": [7, 8], "lat": [0.5, 1.5], "lon": [0.5, 3.5], "tile_id": ["t", "t"]}
+    )
+    master_path = tmp_path / "m.parquet"
+    master.to_parquet(master_path, index=False)
+
+    out = ensure_grid_lookup(
+        master_path, grid_sampling=grid_sampling, extent=extent,
+        max_distance_km=1.0, k=1, cache_dir=cache,
+    )
+    lut = pd.read_parquet(out).set_index("location_id")["pixel_id"]
+
+    def pixel_for(lat, lon):
+        col = int(np.floor((lon - lon_min) / grid_sampling))
+        row = int(np.floor((lat_max - lat) / grid_sampling))
+        return row * n_lon + col
+
+    expected_7 = pixel_for(0.5, 0.5)
+    expected_8 = pixel_for(1.5, 3.5)
+    assert lut[7] == expected_7, f"loc7 -> {lut[7]}, expected {expected_7}"
+    assert lut[8] == expected_8, f"loc8 -> {lut[8]}, expected {expected_8}"
+    # Distinguished: must not be transposed (swapped row/col index).
+    assert lut[7] != pixel_for(0.5, 1.5)
+    assert lut[8] != pixel_for(1.5, 0.5)
+
+
+def test_grid_lookup_coordinate_order_matches_great_circle(tmp_path):
+    """Nearest-location fill uses (lat, lon) haversine, matching brute force.
+
+    Regression for a scikit-learn BallTree gotcha: the haversine metric expects
+    points as (latitude, longitude). Passing (lon, lat) silently computes wrong
+    great-circle distances and scrambles which location fills each pixel.
+    Compare the inverted lookup against a brute-force great-circle nearest-
+    neighbour on off-axis data, where a lat/lon swap would disagree.
+    """
+    from plotting_joseph.data import _build_inverted_grid_lookup
+
+    rng = np.random.default_rng(7)
+    n = 12
+    master = pd.DataFrame(
+        {
+            "location_id": np.arange(n),
+            "lat": rng.uniform(-30, 60, n),
+            "lon": rng.uniform(-60, 60, n),
+        }
+    )
+
+    extent = (-70, 70, -40, 70)
+    grid_sampling = 3.0
+    max_distance_km = 10000.0
+    lut = _build_inverted_grid_lookup(
+        master, grid_sampling, extent, 1, max_distance_km
+    )
+
+    lon_min, lon_max, lat_min, lat_max = extent
+    n_lon = int(round((lon_max - lon_min) / grid_sampling))
+    n_lat = int(round((lat_max - lat_min) / grid_sampling))
+    got = np.full(n_lat * n_lon, -1, dtype=np.int64)
+    got[lut["pixel_id"].to_numpy(np.int64)] = lut["location_id"].to_numpy(np.int64)
+
+    def great_circle(lat1, lon1, lat2, lon2):
+        p1, p2 = np.radians([lat1, lon1]), np.radians([lat2, lon2])
+        dlat, dlon = p2[0] - p1[0], p2[1] - p1[1]
+        a = (
+            np.sin(dlat / 2) ** 2
+            + np.cos(p1[0]) * np.cos(p2[0]) * np.sin(dlon / 2) ** 2
+        )
+        return 2 * 6371.0 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+
+    src_lat = master["lat"].to_numpy(float)
+    src_lon = master["lon"].to_numpy(float)
+    src_id = master["location_id"].to_numpy(np.int64)
+
+    got = got.reshape(n_lat, n_lon)
+    ref = np.full_like(got, -1)
+    for i in range(n_lat):
+        lat = lat_max - (i + 0.5) * grid_sampling  # row 0 == north (origin="upper")
+        for j in range(n_lon):
+            lon = lon_min + (j + 0.5) * grid_sampling
+            dists = great_circle(lat, lon, src_lat, src_lon)
+            best = int(np.argmin(dists))
+            if dists[best] <= max_distance_km:
+                ref[i, j] = src_id[best]
+
+    n_mismatch = int(np.sum(got != ref))
+    assert n_mismatch == 0, (
+        f"{n_mismatch} pixels disagree with brute-force great-circle nearest "
+        "neighbour (coordinate order wrong)"
+    )
 
 
 def test_plot_map_out_of_extent_still_fills(tmp_path, master):
@@ -188,6 +332,36 @@ def test_plot_map_out_of_extent_still_fills(tmp_path, master):
     import matplotlib.pyplot as plt
 
     plt.close(fig)
+
+
+def test_plot_map_fill_whites_beyond_max_distance(tmp_path):
+    """Direct per-pixel fill: close pixels get the location's value, far ones are white."""
+    import matplotlib.pyplot as plt
+
+    grid_sampling = 1.0
+    extent = (0.0, 4.0, 0.0, 2.0)  # n_lon=4, n_lat=2 -> 8 pixels
+    master = pd.DataFrame(
+        {"location_id": [7], "lat": [0.5], "lon": [0.5], "tile_id": ["t"]}
+    )
+    master_path = tmp_path / "m.parquet"
+    master.to_parquet(master_path, index=False)
+
+    data = pd.DataFrame({"location_id": [7], "backscatter40": [10.0]})
+
+    def count_filled(max_distance_km):
+        fig = plot_map(
+            data=data, var="backscatter40", master_lookup=master_path,
+            extent=extent, grid_sampling=grid_sampling,
+            max_distance_km=max_distance_km, show_plot=False,
+        )
+        arr = fig.axes[0].get_images()[0].get_array()
+        plt.close(fig)
+        return int(np.count_nonzero(~np.isnan(arr)))
+
+    # 500 km reaches every pixel in the small box -> all filled with the value.
+    assert count_filled(500.0) == 8
+    # 40 km only reaches the location's own cell -> a single filled pixel.
+    assert count_filled(40.0) == 1
 
 
 def test_plot_map_out_of_extent_blank_when_disabled(master):

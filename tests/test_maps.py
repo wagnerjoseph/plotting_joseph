@@ -133,6 +133,125 @@ def test_plot_map_fill_produces_more_data_than_snap(tmp_path):
     assert large > tiny, f"Expected fill to cover more pixels, got {large} vs {tiny}"
 
 
+def test_plot_map_marker_outside_extent_warns(tmp_path, capsys):
+    """Out-of-extent markers warn clearly, with coords and the extent; strict extent kept."""
+    import matplotlib.pyplot as plt
+
+    master, master_df = _make_master(tmp_path)
+    data = pd.DataFrame(
+        {
+            "location_id": master_df["location_id"],
+            "backscatter40": np.random.RandomState(0).normal(size=len(master_df)),
+        }
+    )
+
+    # A narrow extent that none of the (world-spread) master locations hit.
+    narrow_extent = (-20.0, -10.0, 40.0, 50.0)
+    marker_loc = int(master_df["location_id"].iloc[0])
+
+    fig = plot_map(
+        data=data,
+        var="backscatter40",
+        master_lookup=master,
+        grid_sampling=1.0,
+        extent=narrow_extent,
+        max_distance_km=500.0,
+        add_marker=("o", marker_loc),
+        show_plot=False,
+    )
+    ax = fig.axes[0]
+    captured = capsys.readouterr().out
+
+    # The warning must name the location, its coords and the extent...
+    assert "outside the requested extent" in captured
+    assert f"location_id={marker_loc}" in captured
+    assert "(lon " in captured and "lat " in captured
+    # ...and there must be no marker actually drawn.
+    marker_lines = [ln for ln in ax.lines if ln.get_marker()]
+    assert len(marker_lines) == 0
+    # Strict extent is kept.
+    assert list(ax.get_xlim()) == pytest.approx([-20.0, -10.0])
+    assert list(ax.get_ylim()) == pytest.approx([40.0, 50.0])
+
+    plt.close(fig)
+
+
+def test_plot_map_marker_coastlines_keep_extent(tmp_path):
+    """Marker + coastlines must not expand the viewport to the whole globe.
+
+    Coastlines are global Line2Ds that enlarge the axes data limits; a later
+    marker ``ax.plot`` would re-autoscale to the globe unless the extent is
+    pinned. Regression for that fix.
+    """
+    from plotting_joseph.plotting.maps import _HAS_CARTOPY
+
+    if not _HAS_CARTOPY:
+        pytest.skip("cartopy not available")
+
+    import matplotlib.pyplot as plt
+
+    master, master_df = _make_master(tmp_path)
+    data = pd.DataFrame(
+        {
+            "location_id": master_df["location_id"],
+            "backscatter40": np.random.RandomState(0).normal(size=len(master_df)),
+        }
+    )
+
+    extent = (-20.0, 20.0, -30.0, 30.0)
+    grid_sampling = 1.0
+    inside = master_df[
+        (master_df["lon"] >= extent[0]) & (master_df["lon"] <= extent[1])
+        & (master_df["lat"] >= extent[2]) & (master_df["lat"] <= extent[3])
+    ]
+    marker_loc = int(inside["location_id"].iloc[0])
+
+    fig = plot_map(
+        data=data,
+        var="backscatter40",
+        master_lookup=master,
+        grid_sampling=grid_sampling,
+        extent=extent,
+        max_distance_km=500.0,
+        add_marker=("o", marker_loc),
+        add_coastlines=True,
+        show_plot=False,
+    )
+    ax = fig.axes[0]
+    fig.canvas.draw()  # previously, rendering expanded the viewport to the globe
+
+    assert list(ax.get_xlim()) == pytest.approx([-20.0, 20.0])
+    assert list(ax.get_ylim()) == pytest.approx([-30.0, 30.0])
+    plt.close(fig)
+
+
+def test_plot_map_marker_unknown_warns(tmp_path, capsys):
+    """A location_id absent from the master lookup warns distinctly from outside-extent."""
+    import matplotlib.pyplot as plt
+
+    master, master_df = _make_master(tmp_path)
+    data = pd.DataFrame(
+        {
+            "location_id": master_df["location_id"],
+            "backscatter40": np.random.RandomState(0).normal(size=len(master_df)),
+        }
+    )
+
+    fig = plot_map(
+        data=data,
+        var="backscatter40",
+        master_lookup=master,
+        grid_sampling=1.0,
+        max_distance_km=500.0,
+        add_marker=("o", 999_999_999),  # not in master
+        show_plot=False,
+    )
+    captured = capsys.readouterr().out
+    assert "not found in the master lookup" in captured
+    assert "outside the requested extent" not in captured
+    plt.close(fig)
+
+
 def test_plot_map_marker_with_fill(tmp_path):
     """Markers still resolve their home cell when 1-to-many fill is used."""
     import matplotlib.pyplot as plt

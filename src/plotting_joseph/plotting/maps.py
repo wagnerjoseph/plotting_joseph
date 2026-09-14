@@ -78,12 +78,56 @@ def _aggregate_pixels(
     return image_flat
 
 
+def _fill_image_from_lookup(
+    lut: pd.DataFrame,
+    data_sub: pd.DataFrame,
+    var: str,
+    n_pixels: int,
+    k: int,
+    stat: str,
+) -> np.ndarray:
+    """Build the map image directly, per pixel, from the inverted lookup.
+
+    For ``k == 1`` ``lut`` holds every ``pixel_id`` -> ``location_id`` (``-1``
+    for pixels whose closest location is beyond ``max_distance_km``). Each pixel
+    shows the value of its closest location and stays ``NaN`` (white) when the
+    location is missing/too far. For ``k > 1`` ``lut`` holds
+    ``pixel_id -> location_ids`` lists, aggregated with ``stat``.
+    """
+    value_map = (
+        data_sub[["location_id", var]]
+        .drop_duplicates("location_id")
+        .set_index("location_id")[var]
+    )
+    loc_to_value = value_map.to_dict()
+
+    if k == 1:
+        pids = lut["pixel_id"].to_numpy(dtype=np.int64)
+        vals = lut["location_id"].map(value_map).to_numpy(dtype=np.float64)
+        image_flat = np.full(n_pixels, np.nan, dtype=np.float64)
+        valid = (pids >= 0) & (pids < n_pixels)
+        image_flat[pids[valid]] = vals[valid]
+        return image_flat
+
+    # k > 1: aggregate the values of the closest locations per pixel.
+    row_pixels: list[int] = []
+    row_values: list[float] = []
+    for pid, locs in zip(lut["pixel_id"], lut["location_ids"]):
+        if locs is None:
+            continue
+        for lid in locs:
+            v = loc_to_value.get(int(lid), np.nan)
+            if not np.isnan(v):
+                row_pixels.append(int(pid))
+                row_values.append(float(v))
+    return _aggregate_pixels(np.asarray(row_pixels), np.asarray(row_values), n_pixels, stat=stat)
+
+
 def _get_color_norm(
     image: np.ndarray,
     center_at_zero: bool = False,
     value_range: tuple[float, float] | None = None,
 ):
-    """Return a matplotlib color normalization for the image."""
     if value_range is None:
         value_range = (np.nanmin(image), np.nanmax(image))
 
@@ -269,29 +313,35 @@ def plot_map(
 
     lut = pd.read_parquet(lookuptable_path)
 
-    location_to_pixel = _build_pixel_mapping(lut, k)
-
-    data_with_pixel_id = data_sub.merge(
-        location_to_pixel.to_frame("pixel_id"),
-        left_on="location_id",
-        right_index=True,
-        how="inner",
-    )
-
-    pixel_id = data_with_pixel_id["pixel_id"].to_numpy()
-    values = data_with_pixel_id[var].to_numpy()
-
     lon_min, lon_max, lat_min, lat_max = extent
     n_lat = int(np.round((lat_max - lat_min) / grid_sampling))
     n_lon = int(np.round((lon_max - lon_min) / grid_sampling))
     n_pixels = n_lat * n_lon
 
-    if k == 1:
-        image_flat = np.full(n_pixels, np.nan, dtype=np.float64)
-        valid = (pixel_id >= 0) & (pixel_id < n_pixels)
-        image_flat[pixel_id[valid]] = values[valid]
+    if max_distance_km > 0:
+        # Direct per-pixel nearest-location fill: every pixel shows its closest
+        # location's value, and is blank (white) when that location is farther
+        # than ``max_distance_km``.
+        image_flat = _fill_image_from_lookup(lut, data_sub, var, n_pixels, k, stat)
     else:
-        image_flat = _aggregate_pixels(pixel_id, values, n_pixels, stat=stat)
+        location_to_pixel = _build_pixel_mapping(lut, k)
+
+        data_with_pixel_id = data_sub.merge(
+            location_to_pixel.to_frame("pixel_id"),
+            left_on="location_id",
+            right_index=True,
+            how="inner",
+        )
+
+        pixel_id = data_with_pixel_id["pixel_id"].to_numpy()
+        values = data_with_pixel_id[var].to_numpy()
+
+        if k == 1:
+            image_flat = np.full(n_pixels, np.nan, dtype=np.float64)
+            valid = (pixel_id >= 0) & (pixel_id < n_pixels)
+            image_flat[pixel_id[valid]] = values[valid]
+        else:
+            image_flat = _aggregate_pixels(pixel_id, values, n_pixels, stat=stat)
 
     image = image_flat.reshape(n_lat, n_lon)
 
@@ -369,22 +419,47 @@ def plot_map(
         aspect="auto",
     )
 
+    # Pin the display to the requested extent and stop autoscale. Coastlines are
+    # global Line2Ds that expand the axes data limits, so later marker ``plot``
+    # calls would re-autoscale the viewport out to the whole globe. Fixing the
+    # limits here keeps the shown region equal to ``extent`` regardless of any
+    # additional artists (coastlines, markers).
+    ax.set_xlim(lon_min, lon_max)
+    ax.set_ylim(lat_min, lat_max)
+    ax.autoscale(False)
+
     marker_value = None
     if add_marker is not None:
         markers_to_plot = add_marker if isinstance(add_marker, list) else [add_marker]
-        # The layout of ``location_to_pixel`` depends on the lookup mode (1:1
-        # snap vs. 1-to-many fill), so markers always resolve via the location's
-        # home cell from the master coordinates.
+        # Markers always resolve via the location's home cell from the master
+        # coordinates, independent of the lookup mode.
         master_df = pd.read_parquet(master_lookup)
         marker_pixels = []
         for marker_style, marker_location_id in markers_to_plot:
+            m = master_df[master_df["location_id"] == marker_location_id]
+            if m.empty:
+                print(
+                    f"  Warning: location_id={marker_location_id} not found in the "
+                    "master lookup; marker skipped."
+                )
+                continue
+            lat = float(m["lat"].iloc[0])
+            lon = float(m["lon"].iloc[0])
+            if not (lon_min <= lon <= lon_max and lat_min <= lat <= lat_max):
+                print(
+                    f"  Warning: marker location_id={marker_location_id} at "
+                    f"({lat:.2f}, {lon:.2f}) lies outside the requested extent "
+                    f"(lon {lon_min:.2f}..{lon_max:.2f}, lat {lat_min:.2f}.."
+                    f"{lat_max:.2f}); marker skipped."
+                )
+                continue
             home = _location_home_pixel(
                 master_df, marker_location_id, extent, grid_sampling, n_lon
             )
             if home is None:
                 print(
-                    f"  Warning: location_id={marker_location_id} not found in "
-                    "master lookup or falls outside extent"
+                    f"  Warning: marker location_id={marker_location_id} falls "
+                    "outside the requested extent; marker skipped."
                 )
                 continue
             marker_pixel, lon, lat = home

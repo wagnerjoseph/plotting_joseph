@@ -118,12 +118,13 @@ distance in km when `max_distance_km > 0`.
 
 ### Two ways to map locations to pixels
 
-By default (`max_distance_km > 0`) an **inverted, proximity-filled** lookup is
-built: every grid pixel is assigned the value of its **nearest** source
-location, but only if that location lies within `max_distance_km` from the
-pixel. This fills in the pixels around every measurement, so nearby areas are
-colored instead of white; only pixels farther than `max_distance_km` from every
-location stay blank. The default is `15.0` km.
+By default (`max_distance_km > 0`) a **proximity-filled** lookup is built: for
+**every grid pixel** the closest source location is found (great-circle /
+haversine via scikit-learn `BallTree`); if that location is within
+`max_distance_km` the pixel keeps it, otherwise it is blank. Plotting then
+colours each pixel with its closest location's value and leaves pixels whose
+closest location is farther than `max_distance_km` white/empty. This fills in
+the pixels around every measurement. The default is `15.0` km.
 
 Pass `max_distance_km=0` (or a negative value) for the exact **per-location
 snap**: each location only colors the single grid cell it falls into, and any

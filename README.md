@@ -100,7 +100,24 @@ plot_map(
 
 `plot_map` builds the grid/map lookup automatically from the master lookup. The
 lookup is created once per combination of geometric parameters (`grid_sampling`,
-`extent`, `k`) and reused afterwards.
+`extent`, `k`, `max_distance_km`) and reused afterwards.
+
+## Examples
+
+Runnable scripts in [`examples/`](examples/) demonstrate the API. Install the
+package (including optional extras) and run them:
+
+```bash
+pip install -e ".[all]"
+
+python examples/01_basic_timeseries.py        # multi-panel time series + correlation
+python examples/02_basic_map.py               # global map with coastlines
+python examples/03_create_lookup_tables.py    # build lookup tables from your data
+python examples/04_custom_data_format.py      # load data with custom column names
+```
+
+> The map example (`02_basic_map.py`) uses `add_coastlines=True`, so it needs the
+> `coastlines` extra (cartopy), which is included in `.[all]`.
 
 ## Auto-generated lookups
 
