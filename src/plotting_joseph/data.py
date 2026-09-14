@@ -358,11 +358,16 @@ def _format_number(x: float) -> str:
     return f"{x:.6f}".rstrip("0").rstrip(".")
 
 
-def _grid_lookup_name(grid_sampling: float, extent, k: int) -> str:
+def _grid_lookup_name(
+    grid_sampling: float, extent, k: int, max_distance_km: float = 0.0
+) -> str:
     """Unique, human-readable filename encoding every geometric parameter."""
     lon_min, lon_max, lat_min, lat_max = extent
     ext = "_".join(_format_number(v) for v in (lon_min, lon_max, lat_min, lat_max))
-    return f"gridSampling_{grid_sampling}_extent_{ext}_k{k}.parquet"
+    base = f"gridSampling_{grid_sampling}_extent_{ext}_k{k}"
+    if max_distance_km > 0:
+        base += f"_maxDistKm_{_format_number(max_distance_km)}"
+    return f"{base}.parquet"
 
 
 def _lookup_cache_dir(master_lookup, cache_dir=None) -> Path:
@@ -480,11 +485,92 @@ def derive_countries_for_locations(master_lookup, location_ids=None) -> dict[int
     return records
 
 
+def _build_inverted_grid_lookup(
+    master: pd.DataFrame,
+    grid_sampling: float,
+    extent: tuple[float, float, float, float],
+    k: int,
+    max_distance_km: float,
+) -> pd.DataFrame:
+    """Build a distance-capped inverted lookup: each pixel -> nearest location(s).
+
+    For every pixel centre on a regular grid over ``extent`` the ``k`` nearest
+    source locations are found (great-circle distance via scipy cKDTree). A
+    pixel is only mapped to a location when that location lies within
+    ``max_distance_km``; otherwise the pixel is dropped (left blank/white on the
+    map). For ``k == 1`` the result has ``pixel_id``/``location_id`` columns;
+    for ``k > 1`` it has ``pixel_id``/``location_ids`` (lists).
+    """
+    try:  # pragma: no cover - environment dependency
+        from scipy.spatial import cKDTree
+    except ImportError as e:  # pragma: no cover
+        raise ImportError(
+            "plot_map with max_distance_km > 0 requires scipy. "
+            "Install plotting_joseph with scipy (e.g. pip install scipy)."
+        ) from e
+
+    lon_min, lon_max, lat_min, lat_max = extent
+    n_lon = int(round((lon_max - lon_min) / grid_sampling))
+    n_lat = int(round((lat_max - lat_min) / grid_sampling))
+
+    cols = np.arange(n_lon)
+    rows = np.arange(n_lat)
+    grid_lons, grid_lats = np.meshgrid(
+        lon_min + (cols + 0.5) * grid_sampling,
+        lat_max - (rows + 0.5) * grid_sampling,
+        indexing="ij",
+    )
+    pixel_id = np.arange(n_lat * n_lon)
+
+    source_ids = master["location_id"].to_numpy(dtype=np.int64)
+    source_rad = np.radians(
+        master[["lat", "lon"]].to_numpy(dtype=float)
+    ).astype(np.float64)
+
+    tree = cKDTree(source_rad)
+    grid_rad = np.radians(
+        np.column_stack([grid_lats.ravel(), grid_lons.ravel()])
+    ).astype(np.float64)
+
+    k_search = min(k, len(source_ids))
+    dist_rad, idx = tree.query(grid_rad, k=k_search)
+
+    def _within_mask(row_dists) -> np.ndarray:
+        return row_dists * 6371.0 <= max_distance_km
+
+    if k == 1:
+        dist_rad = np.asarray(dist_rad)
+        idx = np.asarray(idx)
+        valid = _within_mask(dist_rad)
+        rows_out = pixel_id[valid]
+        locs_out = source_ids[np.asarray(idx)[valid]]
+        return pd.DataFrame({"pixel_id": rows_out, "location_id": locs_out})
+
+    # k > 1: collect all valid neighbours per pixel.
+    dist_rad = np.asarray(dist_rad)
+    idx = np.asarray(idx)
+    if dist_rad.ndim == 1:  # only one source location
+        dist_rad = dist_rad[:, None]
+        idx = idx[:, None]
+    valid_masks = _within_mask(dist_rad)  # shape (n_pixels, k)
+    location_lists = []
+    pixel_out = []
+    for p in range(pixel_id.size):
+        locs = source_ids[idx[p][valid_masks[p]]]
+        if locs.size:
+            pixel_out.append(pixel_id[p])
+            location_lists.append([int(x) for x in locs])
+    return pd.DataFrame(
+        {"pixel_id": pixel_out, "location_ids": location_lists}
+    )
+
+
 def ensure_grid_lookup(
     master_lookup,
     grid_sampling: float,
     extent: tuple[float, float, float, float] = (-180.0, 180.0, -60.0, 85.0),
     k: int = 1,
+    max_distance_km: float = 15.0,
     cache_dir=None,
 ) -> Path:
     """Build (or reuse) the map lookup for the given geometric parameters.
@@ -493,8 +579,17 @@ def ensure_grid_lookup(
     ``grid_sampling`` over ``extent``. For ``k > 1`` each pixel stores the list
     of locations aggregated into it.
 
-    The filename encodes ``grid_sampling``, ``extent`` and ``k`` so that a
-    lookup built for one set of parameters is reused for identical calls.
+    When ``max_distance_km`` is ``> 0`` an **inverted** lookup is built instead:
+    each pixel is mapped to its nearest source location(s), but only when that
+    location lies within ``max_distance_km``. Pixels farther than this threshold
+    from every location are left out (blank on the map). This fills in pixels
+    near measurement locations and avoids empty/white holes around them.
+    Defaults to ``15.0`` (km); pass ``0`` (or negative) to fall back to the
+    exact per-location floor snap.
+
+    The filename encodes ``grid_sampling``, ``extent``, ``k`` and (when enabled)
+    ``max_distance_km`` so that a lookup built for one set of parameters is
+    reused for identical calls.
     """
     if grid_sampling is None or grid_sampling <= 0:
         raise ValueError(
@@ -502,35 +597,40 @@ def ensure_grid_lookup(
         )
     master = _read_master(master_lookup)
     d = _map_lookup_dir(master_lookup, cache_dir)
-    out = d / _grid_lookup_name(grid_sampling, extent, k)
+    out = d / _grid_lookup_name(grid_sampling, extent, k, max_distance_km)
     if out.exists():
         return out
 
-    lon_min, lon_max, lat_min, lat_max = extent
-    n_lon = int(round((lon_max - lon_min) / grid_sampling))
-    n_lat = int(round((lat_max - lat_min) / grid_sampling))
-
-    lon = master["lon"].to_numpy(dtype=float)
-    lat = master["lat"].to_numpy(dtype=float)
-    col = np.floor((lon - lon_min) / grid_sampling).astype(int)
-    row = np.floor((lat_max - lat) / grid_sampling).astype(int)
-    valid = (row >= 0) & (row < n_lat) & (col >= 0) & (col < n_lon)
-    pixel = np.where(valid, row * n_lon + col, -1)
-
-    if k == 1:
-        grid_lut = pd.DataFrame(
-            {"location_id": master["location_id"].to_numpy(), "pixel_id": pixel}
+    if max_distance_km > 0:
+        grid_lut = _build_inverted_grid_lookup(
+            master, grid_sampling, extent, k, max_distance_km
         )
     else:
-        df = pd.DataFrame(
-            {
-                "location_id": master["location_id"].to_numpy(),
-                "pixel_id": pixel,
-            }
-        ).query("pixel_id >= 0")
-        grid_lut = df.groupby("pixel_id")["location_id"].apply(list).reset_index()
-        grid_lut = grid_lut.rename(columns={"location_id": "location_ids"})
-        grid_lut["pixel_id"] = grid_lut["pixel_id"].astype(int)
+        lon_min, lon_max, lat_min, lat_max = extent
+        n_lon = int(round((lon_max - lon_min) / grid_sampling))
+        n_lat = int(round((lat_max - lat_min) / grid_sampling))
+
+        lon = master["lon"].to_numpy(dtype=float)
+        lat = master["lat"].to_numpy(dtype=float)
+        col = np.floor((lon - lon_min) / grid_sampling).astype(int)
+        row = np.floor((lat_max - lat) / grid_sampling).astype(int)
+        valid = (row >= 0) & (row < n_lat) & (col >= 0) & (col < n_lon)
+        pixel = np.where(valid, row * n_lon + col, -1)
+
+        if k == 1:
+            grid_lut = pd.DataFrame(
+                {"location_id": master["location_id"].to_numpy(), "pixel_id": pixel}
+            )
+        else:
+            df = pd.DataFrame(
+                {
+                    "location_id": master["location_id"].to_numpy(),
+                    "pixel_id": pixel,
+                }
+            ).query("pixel_id >= 0")
+            grid_lut = df.groupby("pixel_id")["location_id"].apply(list).reset_index()
+            grid_lut = grid_lut.rename(columns={"location_id": "location_ids"})
+            grid_lut["pixel_id"] = grid_lut["pixel_id"].astype(int)
 
     grid_lut.to_parquet(out, index=False)
     return out

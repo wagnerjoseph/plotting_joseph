@@ -18,6 +18,7 @@ Plots a gridded global map of a variable with a histogram colorbar.
 | `grid_sampling`   | grid resolution (°) used to build the grid lookup (default `0.5`).   |
 | `extent`          | `(lon_min, lon_max, lat_min, lat_max)`.                             |
 | `k`               | number of aggregated neighbors per pixel (`1` = 1:1 mapping).       |
+| `max_distance_km` | proximity-fill distance in km (default `15.0`). Each pixel is colored by its nearest location *only if* within this radius; `0` = exact per-location snap (locations outside `extent` left blank). |
 | `month`           | filter to a month (e.g. `"2020-01"`) using the `time` column.         |
 | `stat`            | aggregation when `k > 1`: min/max/mean/median.                       |
 | `title`, `cbar_label` | plot labels.                                                     |
@@ -33,9 +34,10 @@ Plots a gridded global map of a variable with a histogram colorbar.
 Returns the matplotlib figure.
 
 > The grid lookup is auto-built from `master_lookup` and **reused for identical
-> calls** — the lookup filename encodes `grid_sampling`, `extent` and `k`, so
-> different parameter combinations produce separate cached files. Map lookups
-> are saved automatically to a `map_lookups/` folder next to the master lookup.
+> calls** — the lookup filename encodes `grid_sampling`, `extent`, `k` and
+> (`max_distance_km` when filled), so different parameter combinations produce
+> separate cached files. Map lookups are saved automatically to a
+> `map_lookups/` folder next to the master lookup.
 
 ### Example
 

@@ -165,6 +165,7 @@ plot_map(
 | `extent` | `tuple` | `(-180, 180, -60, 85)` | Bounding box `(lon_min, lon_max, lat_min, lat_max)` of the map. |
 | `grid_sampling` | `float` | `0.5` | Grid resolution in degrees used to build the grid lookup. |
 | `k` | `int` | `1` | Number of aggregated neighbors per pixel (`1` = direct 1:1 mapping). |
+| `max_distance_km` | `float` | `15.0` | Proximity-fill distance in km. When `> 0`, each pixel is colored by its nearest location only if within this radius (fills pixels around measurements, avoiding white holes). `0`/negative = exact per-location snap. |
 | `value_range` | `tuple[float, float]` | `None` | Fixed color range `(vmin, vmax)`; values outside are clipped. `None` uses the data min/max. |
 | `save_path` | `str` / `Path` | `None` | Where to save the figure. `None` does not save. |
 | `plot_robust` | `tuple[float, float]` | `None` | Robust color range as percentiles `(low, high)`, e.g. `(2, 98)`. |
@@ -178,9 +179,10 @@ plot_map(
 **Returns:** the matplotlib `Figure`.
 
 > **Grid lookup reuse.** The map grid lookup is auto-built from
-> `master_lookup` and cached. Its filename encodes `grid_sampling`, `extent`
-> and `k`, so identical parameter combinations reuse the same file. Lookups are
-> stored in a `map_lookups/` folder next to the master lookup.
+> `master_lookup` and cached. Its filename encodes `grid_sampling`, `extent`,
+> `k` and (`max_distance_km` when filled), so identical parameter combinations
+> reuse the same file. Lookups are stored in a `map_lookups/` folder next to the
+> master lookup.
 
 ### Example
 

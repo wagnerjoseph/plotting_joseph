@@ -94,6 +94,48 @@ def _get_color_norm(
     return plt.Normalize(vmin=vmin, vmax=vmax)
 
 
+def _pixel_center(pixel: int, extent, grid_sampling: float, n_lon: int):
+    """Return the ``(lon, lat)`` centre of a pixel, always from ``extent``.
+
+    This is the single source of truth for pixel -> longitude/latitude so that
+    every plotted feature (markers included) is positioned from the same
+    ``extent`` parameter that defines the grid.
+    """
+    lon_min, _lon_max, _lat_min, lat_max = extent
+    col = pixel % n_lon
+    row = pixel // n_lon
+    return lon_min + (col + 0.5) * grid_sampling, lat_max - (row + 0.5) * grid_sampling
+
+
+def _location_home_pixel(
+    master,
+    location_id,
+    extent,
+    grid_sampling: float,
+    n_lon: int,
+):
+    """Return ``(pixel_id, lon, lat)`` of the grid cell a location falls in.
+
+    This resolves the *home* cell (the pixel the location's lat/lon lands in),
+    independent of how the lookup was built (direct snap or inverted fill), so
+    markers are always placed reliably. Returns ``None`` if the location is not
+    in ``master`` or falls outside ``extent``.
+    """
+    m = master[master["location_id"] == location_id]
+    if m.empty:
+        return None
+    lat = float(m["lat"].iloc[0])
+    lon = float(m["lon"].iloc[0])
+    lon_min, lon_max, lat_min, lat_max = extent
+    n_lat = int(np.round((lat_max - lat_min) / grid_sampling))
+    col = int(np.floor((lon - lon_min) / grid_sampling))
+    row = int(np.floor((lat_max - lat) / grid_sampling))
+    if not (0 <= row < n_lat and 0 <= col < n_lon):
+        return None
+    pixel = row * n_lon + col
+    return pixel, *_pixel_center(pixel, extent, grid_sampling, n_lon)
+
+
 def _make_title(var: str, stat: str, month: str | None = None, k: int = 1) -> str:
     """Construct a descriptive title for the plot."""
     title = var.capitalize() + (f" — {month}" if month else "")
@@ -115,6 +157,7 @@ def plot_map(
     extent: tuple[float, float, float, float] = (-180, 180, -60, 85),
     grid_sampling: float = 0.5,
     k: int = 1,
+    max_distance_km: float = 15.0,
     value_range: tuple[float, float] | None = None,
     save_path: str | Path | None = None,
     plot_robust: tuple[float, float] | None = None,
@@ -158,6 +201,14 @@ def plot_map(
         Grid resolution in degrees used to build the grid lookup.
     k : int, default=1
         Number of aggregated neighbors per pixel (``1`` = direct 1:1 mapping).
+    max_distance_km : float, default=15.0
+        When ``> 0``, each grid pixel is filled with the value of its nearest
+        source location, but only if that location lies within
+        ``max_distance_km``. Pixels farther than this from every location are
+        left blank, so proximity-filled pixels around measurements are kept
+        while remote empty cells stay white. Pass ``0`` (or negative) to fall
+        back to the exact 1:1 floor-snap per location (each location only fills
+        the single pixel it falls in).
     value_range : tuple, optional
         Fixed color range ``(vmin, vmax)``; values outside are clipped. If
         None, uses the data min/max.
@@ -213,6 +264,7 @@ def plot_map(
         grid_sampling=grid_sampling,
         extent=extent,
         k=k,
+        max_distance_km=max_distance_km,
     )
 
     lut = pd.read_parquet(lookuptable_path)
@@ -320,34 +372,42 @@ def plot_map(
     marker_value = None
     if add_marker is not None:
         markers_to_plot = add_marker if isinstance(add_marker, list) else [add_marker]
+        # The layout of ``location_to_pixel`` depends on the lookup mode (1:1
+        # snap vs. 1-to-many fill), so markers always resolve via the location's
+        # home cell from the master coordinates.
+        master_df = pd.read_parquet(master_lookup)
+        marker_pixels = []
         for marker_style, marker_location_id in markers_to_plot:
-            if marker_location_id in location_to_pixel.index:
-                marker_pixel = int(location_to_pixel.loc[marker_location_id])
-                row = marker_pixel // n_lon
-                col = marker_pixel % n_lon
-                lon = lon_min + (col + 0.5) * grid_sampling
-                lat = lat_max - (row + 0.5) * grid_sampling
-                ax.plot(
-                    lon,
-                    lat,
-                    marker_style,
-                    color="red",
-                    markersize=10,
-                    markeredgewidth=2,
-                )
-                current_marker_value = image[row, col]
-                if marker_value is None:
-                    marker_value = current_marker_value
-                if value_range is not None:
-                    vmin, vmax = value_range
-                    current_marker_value = np.clip(
-                        current_marker_value,
-                        vmin + 0.005 * (vmax - vmin),
-                        vmax - 0.005 * (vmax - vmin),
-                    )
-            else:
+            home = _location_home_pixel(
+                master_df, marker_location_id, extent, grid_sampling, n_lon
+            )
+            if home is None:
                 print(
-                    f"  Warning: location_id={marker_location_id} not found in lookup table"
+                    f"  Warning: location_id={marker_location_id} not found in "
+                    "master lookup or falls outside extent"
+                )
+                continue
+            marker_pixel, lon, lat = home
+            marker_pixels.append((marker_style, marker_pixel, lon, lat))
+            row = marker_pixel // n_lon
+            col = marker_pixel % n_lon
+            ax.plot(
+                lon,
+                lat,
+                marker_style,
+                color="red",
+                markersize=10,
+                markeredgewidth=2,
+            )
+            current_marker_value = image[row, col]
+            if marker_value is None:
+                marker_value = current_marker_value
+            if value_range is not None:
+                vmin, vmax = value_range
+                current_marker_value = np.clip(
+                    current_marker_value,
+                    vmin + 0.005 * (vmax - vmin),
+                    vmax - 0.005 * (vmax - vmin),
                 )
 
     divider = make_axes_locatable(ax)
@@ -393,16 +453,13 @@ def plot_map(
     hist_ax.invert_xaxis()
 
     if add_marker is not None:
-        markers_to_plot = add_marker if isinstance(add_marker, list) else [add_marker]
         marker_values = []
-        for marker_style, marker_location_id in markers_to_plot:
-            if marker_location_id in location_to_pixel.index:
-                marker_pixel = int(location_to_pixel.loc[marker_location_id])
-                row = marker_pixel // n_lon
-                col = marker_pixel % n_lon
-                marker_val = image[row, col]
-                if not np.isnan(marker_val):
-                    marker_values.append(marker_val)
+        for _style, pixel, _lon, _lat in marker_pixels:
+            row = pixel // n_lon
+            col = pixel % n_lon
+            marker_val = image[row, col]
+            if not np.isnan(marker_val):
+                marker_values.append(marker_val)
         for marker_val in marker_values:
             hist_ax.axhline(marker_val, color="red", linewidth=1, alpha=0.7)
 

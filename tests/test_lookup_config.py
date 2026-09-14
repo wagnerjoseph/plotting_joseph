@@ -109,6 +109,109 @@ def test_grid_lookup_requires_sampling(master):
         ensure_grid_lookup(master_path, grid_sampling=None, extent=(-25, 25, -15, 15), cache_dir=cache)
 
 
+def test_grid_lookup_encodes_max_distance_in_name(master):
+    """Enabled fill encodes max_distance_km in the filename; disabled does not."""
+    cache, master_path = master
+    filled = ensure_grid_lookup(
+        master_path, grid_sampling=0.5, extent=(-25, 25, -15, 15),
+        max_distance_km=15.0, cache_dir=cache,
+    )
+    assert "_maxDistKm_15" in filled.name
+
+    snapped = ensure_grid_lookup(
+        master_path, grid_sampling=0.5, extent=(-25, 25, -15, 15),
+        max_distance_km=0.0, cache_dir=cache,
+    )
+    assert "_maxDistKm" not in snapped.name
+    assert snapped != filled
+
+
+def test_grid_lookup_inverted_fills_near_locations(master):
+    """With a large max_distance every pixel gets a value (no white holes)."""
+    cache, master_path = master
+    out = ensure_grid_lookup(
+        master_path, grid_sampling=0.5, extent=(-25, 25, -15, 15),
+        max_distance_km=2000.0, cache_dir=cache,
+    )
+    df = pd.read_parquet(out)
+    assert {"location_id", "pixel_id"} <= set(df.columns)
+    assert (df["pixel_id"] >= 0).all()
+    n_pixels = int(round((25 - -25) / 0.5)) * int(round((15 - -15) / 0.5))
+    assert df["pixel_id"].nunique() == n_pixels
+
+
+def test_grid_lookup_inverted_leaves_distant_pixels_blank(master):
+    """A tiny max_distance leaves most pixels unmapped (dropped -> white)."""
+    cache, master_path = master
+    out = ensure_grid_lookup(
+        master_path, grid_sampling=0.5, extent=(-25, 25, -15, 15),
+        max_distance_km=0.01, cache_dir=cache,
+    )
+    df = pd.read_parquet(out)
+    assert df["pixel_id"].nunique() < 200
+
+
+def test_grid_lookup_inverted_k_gt_1(master):
+    """k>1 returns pixel_id -> location_ids lists within max_distance."""
+    cache, master_path = master
+    out = ensure_grid_lookup(
+        master_path, grid_sampling=0.5, extent=(-25, 25, -15, 15),
+        max_distance_km=2000.0, k=3, cache_dir=cache,
+    )
+    df = pd.read_parquet(out)
+    assert {"pixel_id", "location_ids"} <= set(df.columns)
+    assert df["location_ids"].map(len).max() >= 1
+
+
+def test_plot_map_out_of_extent_still_fills(tmp_path, master):
+    """Locations just outside the extent still color nearby pixels when filled."""
+    _, master_path = master
+    master_df = pd.read_parquet(master_path)
+    data = pd.DataFrame(
+        {
+            "location_id": master_df["location_id"],
+            "backscatter40": np.random.RandomState(1).normal(-12, 3, len(master_df)),
+        }
+    )
+    # Extent adjacent to the master locations (lon -20..20) but not containing
+    # any: with fill-by-proximity the nearby locations still color pixels.
+    fig = plot_map(
+        data=data,
+        var="backscatter40",
+        master_lookup=master_path,
+        extent=(30, 40, -10, 10),
+        grid_sampling=0.5,
+        max_distance_km=1500.0,
+        show_plot=False,
+    )
+    assert fig is not None
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+
+
+def test_plot_map_out_of_extent_blank_when_disabled(master):
+    """Without fill (max_distance=0), locations outside extent fail loudly."""
+    _, master_path = master
+    master_df = pd.read_parquet(master_path)
+    data = pd.DataFrame(
+        {
+            "location_id": master_df["location_id"],
+            "backscatter40": np.random.RandomState(1).normal(-12, 3, len(master_df)),
+        }
+    )
+    with pytest.raises(ValueError, match="No plottable data"):
+        plot_map(
+            data=data,
+            var="backscatter40",
+            master_lookup=master_path,
+            extent=(30, 40, -10, 10),
+            grid_sampling=0.5,
+            max_distance_km=0.0,
+            show_plot=False,
+        )
+
+
 def test_plot_map_via_master(master):
     _, master_path = master
     master_df = pd.read_parquet(master_path)

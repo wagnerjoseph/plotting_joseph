@@ -14,7 +14,7 @@ The easiest workflow is to point the plotting functions at a single **master
 lookup** — a `location_id_to_tile_id.parquet` with `location_id`, `lat`, `lon`
 and (optionally) `tile_id`. Everything else is derived from it **on demand**:
 
-* `plot_map(..., master_lookup=..., extent=..., grid_sampling=..., k=...)`
+* `plot_map(..., master_lookup=..., extent=..., grid_sampling=..., k=..., max_distance_km=...)`
   builds the grid/map lookup when none is passed.
 * `Timeseries.plot_time_series(..., master_lookup=..., ...)` builds the country
   lookup (from the web) and, with `add_closest_points`, the neighbors.
@@ -27,9 +27,13 @@ are passed again**; the geometric parameters are encoded in the filename/dir
 name, so different grids/neighbor requests produce separate cached files:
 
 ```
-map_lookups/gridSampling_0.5_extent_-180_180_-60_85_k1.parquet
+map_lookups/gridSampling_0.5_extent_-180_180_-60_85_k1_maxDistKm_15.parquet
 neighbor_lookups/neighbors_k8_maxd100/location_id_to_tile_id_0009.parquet
 ```
+
+When `max_distance_km > 0` the grid lookup filename also encodes the maximum
+proximity-fill distance (see below); passing `max_distance_km=0` produces the
+older filename without the `_maxDistKm_` tag.
 
 The same generation is available as reusable helpers:
 
@@ -42,7 +46,8 @@ from plotting_joseph import (
 ensure_location_ids("lookup_tables/location_id_to_tile_id.parquet")
 ensure_country_lookup("lookup_tables/location_id_to_tile_id.parquet")
 ensure_grid_lookup("lookup_tables/location_id_to_tile_id.parquet",
-                   grid_sampling=0.5, extent=(-180, 180, -60, 85), k=1)
+                   grid_sampling=0.5, extent=(-180, 180, -60, 85), k=1,
+                   max_distance_km=15.0)
 ensure_neighbor_lookup("lookup_tables/location_id_to_tile_id.parquet",
                        k_neighbors=8, max_distance_km=100.0)
 ```
@@ -106,9 +111,23 @@ LookupTableCreator.from_grid(
 `plot_map` builds this lookup automatically from the master lookup, mapping
 `location_id` -> `pixel_id` on the regular grid you want to render. The
 auto-generated filename follows the pattern
-`gridSampling_<res>_extent_<lon0>_<lon1>_<lat0>_<lat1>_kN.parquet` where `N` is
-the number of aggregated neighbors (`1` = direct 1:1 mapping) and `<res>` is
-the grid resolution in degrees.
+`gridSampling_<res>_extent_<lon0>_<lon1>_<lat0>_<lat1>_kN[_maxDistKm_<dist>].parquet`
+where `N` is the number of aggregated neighbors (`1` = direct 1:1 mapping),
+`<res>` is the grid resolution in degrees, and `<dist>` is the proximity-fill
+distance in km when `max_distance_km > 0`.
+
+### Two ways to map locations to pixels
+
+By default (`max_distance_km > 0`) an **inverted, proximity-filled** lookup is
+built: every grid pixel is assigned the value of its **nearest** source
+location, but only if that location lies within `max_distance_km` from the
+pixel. This fills in the pixels around every measurement, so nearby areas are
+colored instead of white; only pixels farther than `max_distance_km` from every
+location stay blank. The default is `15.0` km.
+
+Pass `max_distance_km=0` (or a negative value) for the exact **per-location
+snap**: each location only colors the single grid cell it falls into, and any
+location outside `extent` is dropped (its surrounding pixels stay white).
 
 ### Schema (`k1`)
 
@@ -117,12 +136,16 @@ the grid resolution in degrees.
 | `location_id` | int64 | Location identifier            |
 | `pixel_id`    | int64 | Flat index into the output grid (`row * n_lon + col`) |
 
+For the inverted lookup each `pixel_id` appears once, mapped to its nearest
+location (a single location therefore appears in many rows — one per pixel it
+fills).
+
 ### Schema (`kN`, `N > 1`)
 
 | Column        | Type  | Description                          |
 |---------------|-------|--------------------------------------|
-| `pixel_id`    | int64/list | Pixel index (scalar or per-location list) |
-| `location_ids`| list  | Original locations aggregated into the pixel |
+| `pixel_id`    | int64 | Pixel index                          |
+| `location_ids`| list  | Nearest locations mapped to the pixel (within `max_distance_km` when filled) |
 
 The grid dimensions are derived from the `extent` and the sampling embedded in
 the filename: `n_lat = (lat_max - lat_min) / grid_sampling`,
